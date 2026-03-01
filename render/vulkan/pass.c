@@ -5,6 +5,7 @@
 #include <wlr/util/log.h>
 #include <wlr/render/color.h>
 #include <wlr/render/drm_syncobj.h>
+#include <wlr/render/vulkan.h>
 
 #include "render/color.h"
 #include "render/vulkan.h"
@@ -783,15 +784,7 @@ static void render_pass_add_rect(struct wlr_render_pass *wlr_pass,
 	pixman_region32_fini(&clip);
 }
 
-static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
-		const struct wlr_render_texture_options *options) {
-	struct wlr_vk_render_pass *pass = get_render_pass(wlr_pass);
-	struct wlr_vk_renderer *renderer = pass->renderer;
-	VkCommandBuffer cb = pass->command_buffer->vk;
-
-	struct wlr_vk_texture *texture = vulkan_get_texture(options->texture);
-	assert(texture->renderer == renderer);
-
+static void check_foreign_texture_in_pass(struct wlr_vk_render_pass *pass, struct wlr_vk_texture *texture) {
 	if (texture->dmabuf_imported && !texture->owned) {
 		// Store this texture in the list of textures that need to be
 		// acquired before rendering and released after rendering.
@@ -802,8 +795,44 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 		texture->owned = true;
 		assert(texture->foreign_link.prev == NULL);
 		assert(texture->foreign_link.next == NULL);
-		wl_list_insert(&renderer->foreign_textures, &texture->foreign_link);
+		wl_list_insert(&pass->renderer->foreign_textures, &texture->foreign_link);
 	}
+}
+
+static void wait_texture_timeline(struct wlr_vk_render_pass *pass,
+	struct wlr_drm_syncobj_timeline *wait_timeline, uint64_t point, struct wlr_vk_texture *texture) {
+	if (texture->dmabuf_imported || wait_timeline != NULL) {
+		struct wlr_vk_render_pass_texture *pass_texture =
+			wl_array_add(&pass->textures, sizeof(*pass_texture));
+		if (pass_texture == NULL) {
+			pass->failed = true;
+			return;
+		}
+
+		struct wlr_drm_syncobj_timeline *wait_timeline = NULL;
+		uint64_t wait_point = 0;
+		if (wait_timeline != NULL) {
+			wait_timeline = wlr_drm_syncobj_timeline_ref(wait_timeline);
+			wait_point = point;
+		}
+
+		*pass_texture = (struct wlr_vk_render_pass_texture){
+			.texture = texture,
+			.wait_timeline = wait_timeline,
+			.wait_point = wait_point,
+		};
+	}
+}
+
+static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
+		const struct wlr_render_texture_options *options) {
+	struct wlr_vk_render_pass *pass = get_render_pass(wlr_pass);
+	struct wlr_vk_renderer *renderer = pass->renderer;
+	VkCommandBuffer cb = pass->command_buffer->vk;
+
+	struct wlr_vk_texture *texture = vulkan_get_texture(options->texture);
+	assert(texture->renderer == renderer);
+	check_foreign_texture_in_pass(pass, texture);
 
 	struct wlr_fbox src_box;
 	wlr_render_texture_options_get_src_box(options, &src_box);
@@ -958,27 +987,10 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 
 	pixman_region32_fini(&clip);
 
-	if (texture->dmabuf_imported || (options != NULL && options->wait_timeline != NULL)) {
-		struct wlr_vk_render_pass_texture *pass_texture =
-			wl_array_add(&pass->textures, sizeof(*pass_texture));
-		if (pass_texture == NULL) {
-			pass->failed = true;
-			return;
-		}
-
-		struct wlr_drm_syncobj_timeline *wait_timeline = NULL;
-		uint64_t wait_point = 0;
-		if (options != NULL && options->wait_timeline != NULL) {
-			wait_timeline = wlr_drm_syncobj_timeline_ref(options->wait_timeline);
-			wait_point = options->wait_point;
-		}
-
-		*pass_texture = (struct wlr_vk_render_pass_texture){
-			.texture = texture,
-			.wait_timeline = wait_timeline,
-			.wait_point = wait_point,
-		};
-	}
+	wait_texture_timeline(pass,
+		options ? options->wait_timeline : NULL,
+		options ? options->wait_point : 0,
+		texture);
 }
 
 static const struct wlr_render_pass_impl render_pass_impl = {
@@ -1354,4 +1366,135 @@ struct wlr_vk_render_pass *vulkan_begin_render_pass(struct wlr_vk_renderer *rend
 	pass->render_setup = render_setup;
 	pass->command_buffer = cb;
 	return pass;
+}
+
+VkCommandBuffer wlr_vk_render_pass_get_command_buffer(struct wlr_render_pass *pass)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	return vk_pass->command_buffer->vk;
+}
+
+VkRenderPass wlr_vk_render_pass_get_render_pass(struct wlr_render_pass *pass)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	return vk_pass->render_setup->render_pass;
+}
+
+void wlr_vk_render_pass_reset_pipeline(struct wlr_render_pass *pass)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	vk_pass->bound_pipeline = VK_NULL_HANDLE;
+}
+
+void wlr_vk_render_pass_set_resources_callback(struct wlr_render_pass *pass,
+		wlr_vk_render_pass_resource_callback_t callback, void *data)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	vk_pass->command_buffer->resource_cb = callback;
+	vk_pass->command_buffer->resource_cb_data = data;
+}
+
+VkDescriptorSetLayout wlr_vk_render_pass_get_texture_ds_layout(struct wlr_render_pass *pass,
+	struct wlr_texture *texture, enum wlr_scale_filter_mode filter_mode, enum wlr_color_transfer_function tf)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	struct wlr_vk_texture *vk_texture = vulkan_get_texture(texture);
+
+	enum wlr_vk_texture_transform tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+
+	switch (tf) {
+		case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
+			if (vk_texture->using_mutable_srgb) {
+				tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+			} else {
+				tex_transform = WLR_VK_TEXTURE_TRANSFORM_SRGB;
+			}
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_EXT_LINEAR:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_ST2084_PQ;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_GAMMA22;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_BT1886;
+			break;
+	}
+
+	struct wlr_vk_pipeline *pipe = setup_get_or_create_pipeline(
+		vk_pass->render_setup,
+		&(struct wlr_vk_pipeline_key) {
+			.source = WLR_VK_SHADER_SOURCE_TEXTURE,
+			.layout = {
+				.ycbcr = {},
+				.filter_mode = filter_mode,
+			},
+			.texture_transform = tex_transform,
+			.blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
+		});
+
+	return pipe->layout->ds;
+}
+
+VkDescriptorSet wlr_vk_render_pass_get_texture_ds(struct wlr_render_pass *pass,
+	struct wlr_texture *texture, enum wlr_scale_filter_mode filter_mode, enum wlr_color_transfer_function tf)
+{
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	struct wlr_vk_texture *vk_texture = vulkan_get_texture(texture);
+	check_foreign_texture_in_pass(vk_pass, vk_texture);
+
+	bool srgb = false;
+	enum wlr_vk_texture_transform tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+
+	switch (tf) {
+		case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
+			if (vk_texture->using_mutable_srgb) {
+				tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+				srgb = true;
+			} else {
+				tex_transform = WLR_VK_TEXTURE_TRANSFORM_SRGB;
+			}
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_EXT_LINEAR:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_ST2084_PQ;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_GAMMA22;
+			break;
+		case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
+			tex_transform = WLR_VK_TEXTURE_TRANSFORM_BT1886;
+			break;
+	}
+
+	struct wlr_vk_pipeline *pipe = setup_get_or_create_pipeline(
+		vk_pass->render_setup,
+		&(struct wlr_vk_pipeline_key) {
+			.source = WLR_VK_SHADER_SOURCE_TEXTURE,
+			.layout = {
+				.ycbcr = {},
+				.filter_mode = filter_mode,
+			},
+			.texture_transform = tex_transform,
+			.blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
+		});
+
+	struct wlr_vk_texture_view *view = vulkan_texture_get_or_create_view(vk_texture, pipe->layout, srgb);
+	wait_texture_timeline(vk_pass, NULL, 0, vk_texture);
+	return view->ds;
+}
+
+void wlr_vk_render_pass_mark_updated(struct wlr_render_pass *pass, pixman_region32_t *updated)
+{
+	auto vk_pass = get_render_pass(pass);
+	int clip_rects_len;
+	const pixman_box32_t *clip_rects = pixman_region32_rectangles(updated, &clip_rects_len);
+	for (int i = 0; i < clip_rects_len; i++) {
+		rect_union_add(&vk_pass->updated_region, clip_rects[i]);
+	}
 }

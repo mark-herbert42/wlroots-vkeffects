@@ -11,6 +11,7 @@
 #include <wlr/render/drm_format_set.h>
 #include <wlr/render/interface.h>
 #include <wlr/util/addon.h>
+#include <wlr/render/vulkan.h>
 #include "util/rect_union.h"
 
 struct wlr_vk_descriptor_pool;
@@ -286,6 +287,9 @@ struct wlr_vk_command_buffer {
 	VkSemaphore binary_semaphore;
 
 	struct wl_array wait_semaphores; // VkSemaphore
+
+	wlr_vk_render_pass_resource_callback_t resource_cb;
+	void *resource_cb_data;
 };
 
 #define VULKAN_COMMAND_BUFFERS_CAP 64

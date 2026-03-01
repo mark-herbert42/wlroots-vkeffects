@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <fcntl.h>
-#include <math.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -494,6 +493,12 @@ static void release_command_buffer_resources(struct wlr_vk_command_buffer *cb,
 	if (cb->color_transform) {
 		wlr_color_transform_unref(cb->color_transform);
 		cb->color_transform = NULL;
+	}
+
+	if (cb->resource_cb) {
+		cb->resource_cb(cb->resource_cb_data);
+		cb->resource_cb = NULL;
+		cb->resource_cb_data = NULL;
 	}
 }
 

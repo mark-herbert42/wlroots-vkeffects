@@ -430,6 +430,8 @@ static bool query_modifier_support(struct wlr_vk_device *dev,
 	for (uint32_t i = 0; i < modp.drmFormatModifierCount; ++i) {
 		VkDrmFormatModifierPropertiesEXT m = modp.pDrmFormatModifierProperties[i];
 		char render_status[256], texture_status[256];
+		bool has_mutable_srgb_render = false;
+		bool has_mutable_srgb_texture = false;
 
 		// check that specific modifier for render usage
 		const char *errmsg = "unknown error";
@@ -441,6 +443,7 @@ static bool query_modifier_support(struct wlr_vk_device *dev,
 					props->format.vk_srgb, vulkan_render_usage, &m, &p, &errmsg)) {
 				supported = true;
 				p.has_mutable_srgb = props->format.vk_srgb != 0;
+				has_mutable_srgb_render = p.has_mutable_srgb;
 			}
 			if (!supported && props->format.vk_srgb) {
 				supported = query_modifier_usage_support(dev, props->format.vk,
@@ -449,8 +452,10 @@ static bool query_modifier_support(struct wlr_vk_device *dev,
 
 			if (supported) {
 				props->dmabuf.render_mods[props->dmabuf.render_mod_count++] = p;
-				wlr_drm_format_set_add(&dev->dmabuf_render_formats,
-					props->format.drm, m.drmFormatModifier);
+				if (has_mutable_srgb_render) {
+					wlr_drm_format_set_add(&dev->dmabuf_render_formats,
+							props->format.drm, m.drmFormatModifier);
+				}
 				found = true;
 			}
 		} else {
@@ -475,6 +480,7 @@ static bool query_modifier_support(struct wlr_vk_device *dev,
 					props->format.vk_srgb, vulkan_dma_tex_usage, &m, &p, &errmsg)) {
 				supported = true;
 				p.has_mutable_srgb = props->format.vk_srgb != 0;
+				has_mutable_srgb_texture = p.has_mutable_srgb;
 			}
 			if (!supported && props->format.vk_srgb) {
 				supported = query_modifier_usage_support(dev, props->format.vk,
@@ -498,9 +504,9 @@ static bool query_modifier_support(struct wlr_vk_device *dev,
 
 		char *modifier_name = drmGetFormatModifierName(m.drmFormatModifier);
 		wlr_log(WLR_DEBUG, "    DMA-BUF modifier %s "
-			"(0x%016"PRIX64", %"PRIu32" planes): %s  %s",
+			"(0x%016"PRIX64", %"PRIu32" planes): %s  %s  r:%u/t:%u",
 			modifier_name ? modifier_name : "<unknown>", m.drmFormatModifier,
-			m.drmFormatModifierPlaneCount, texture_status, render_status);
+			m.drmFormatModifierPlaneCount, texture_status, render_status, has_mutable_srgb_render, has_mutable_srgb_texture);
 		free(modifier_name);
 	}
 
