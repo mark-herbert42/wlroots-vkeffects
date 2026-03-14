@@ -1,5 +1,5 @@
 project(
-	'wlroots',
+	'wlroots-vkfx',
 	'c',
 	version: '0.20.0',
 	license: 'MIT',
