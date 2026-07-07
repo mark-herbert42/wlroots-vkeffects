@@ -1380,8 +1380,18 @@ VkRenderPass wlr_vk_render_pass_get_render_pass(struct wlr_render_pass *pass)
 	return vk_pass->render_setup->render_pass;
 }
 
-void wlr_vk_render_pass_reset_pipeline(struct wlr_render_pass *pass)
-{
+VkPipeline wlr_vk_render_pass_get_bound_pipeline(struct wlr_render_pass *pass) {
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	return vk_pass->bound_pipeline;
+}
+
+void wlr_vk_render_pass_set_bound_pipeline(struct wlr_render_pass *pass,
+		VkPipeline pipeline) {
+	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
+	vk_pass->bound_pipeline = pipeline;
+}
+
+void wlr_vk_render_pass_reset_pipeline(struct wlr_render_pass *pass) {
 	struct wlr_vk_render_pass *vk_pass = get_render_pass(pass);
 	vk_pass->bound_pipeline = VK_NULL_HANDLE;
 }

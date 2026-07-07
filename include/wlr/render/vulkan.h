@@ -29,6 +29,9 @@ uint32_t wlr_vk_renderer_get_queue_family(struct wlr_renderer *renderer);
 
 VkCommandBuffer wlr_vk_render_pass_get_command_buffer(struct wlr_render_pass *pass);
 VkRenderPass wlr_vk_render_pass_get_render_pass(struct wlr_render_pass *pass);
+VkPipeline wlr_vk_render_pass_get_bound_pipeline(struct wlr_render_pass *pass);
+void wlr_vk_render_pass_set_bound_pipeline(struct wlr_render_pass *pass,
+		VkPipeline pipeline);
 void wlr_vk_render_pass_reset_pipeline(struct wlr_render_pass *pass);
 VkDescriptorSetLayout wlr_vk_render_pass_get_texture_ds_layout(struct wlr_render_pass *pass,
 	struct wlr_texture *texture, enum wlr_scale_filter_mode filter_mode, enum wlr_color_transfer_function tf);
