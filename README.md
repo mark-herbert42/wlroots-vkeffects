@@ -39,6 +39,7 @@ programming language.
 
 Install dependencies:
 
+
 * meson
 * wayland
 * wayland-protocols
