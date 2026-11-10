@@ -1216,6 +1216,7 @@ static void xwayland_surface_associate(struct wlr_xwm *xwm,
 		xwm->atoms[NET_WM_STATE],
 		xwm->atoms[NET_WM_STRUT_PARTIAL],
 		xwm->atoms[NET_WM_WINDOW_TYPE],
+		xwm->atoms[NET_WM_WINDOW_OPACITY],
 		xwm->atoms[NET_WM_NAME],
 		xwm->atoms[NET_WM_ICON],
 	};
